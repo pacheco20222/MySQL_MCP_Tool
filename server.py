@@ -34,8 +34,12 @@ PORT = int(os.getenv("PORT", "8000"))
 HOST = os.getenv("HOST", "0.0.0.0")
 PUBLIC_PATH_TOKEN = os.getenv("PUBLIC_PATH_TOKEN")  # optional: mount MCP under /<token> to emulate URL-based access control
 
+# FastMCP mounts HTTP handlers under /mcp by default; expose them at the root so
+# simple base URLs like https://service/ work with HTTP transport clients.
+STREAMABLE_HTTP_PATH = "/" if TRANSPORT == "http" else "/mcp"
+
 # ---------------------- MCP Init ----------------------
-mcp = FastMCP("mysql-mcp")
+mcp = FastMCP("mysql-mcp", streamable_http_path=STREAMABLE_HTTP_PATH)
 
 # ---------------------- Helpers ----------------------
 
