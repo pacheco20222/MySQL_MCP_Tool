@@ -32,6 +32,7 @@ API_KEY = os.getenv("API_KEY")  # optional bearer token; if set, required
 TRANSPORT = os.getenv("MCP_TRANSPORT", "http").lower()  # stdio | http | sse
 PORT = int(os.getenv("PORT", "8000"))
 HOST = os.getenv("HOST", "0.0.0.0")
+PUBLIC_PATH_TOKEN = os.getenv("PUBLIC_PATH_TOKEN")  # optional: mount MCP under /<token> to emulate URL-based access control
 
 # ---------------------- MCP Init ----------------------
 mcp = FastMCP("mysql-mcp")
@@ -234,20 +235,22 @@ def build_asgi_app():
         return JSONResponse(res)
 
     if TRANSPORT == "http":
-        mounted = mcp.streamable_http_app()  # MCP endpoint at /mcp when mounted at root
+        mounted = mcp.streamable_http_app()  # MCP endpoint mounted under prefix
+        prefix = f"/{PUBLIC_PATH_TOKEN}" if PUBLIC_PATH_TOKEN else "/"
         routes = [
             Route("/health", _health),
             # quick test endpoints (protected by API_KEY header)
             Route("/test/ping", test_ping),
             Route("/test/list_databases", test_list_dbs),
             Route("/test/run_sql", test_run_sql),
-            Mount("/", app=mounted),
+            Mount(prefix, app=mounted),
         ]
     elif TRANSPORT == "sse":
         mounted = mcp.sse_app()
+        prefix = f"/{PUBLIC_PATH_TOKEN}" if PUBLIC_PATH_TOKEN else "/"
         routes = [
             Route("/health", _health),
-            Mount("/", app=mounted),
+            Mount(prefix, app=mounted),
         ]
     else:
         routes = [Route("/health", _health)]
