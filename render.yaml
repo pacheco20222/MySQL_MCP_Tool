@@ -1,0 +1,28 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# File: render.yaml
+# ─────────────────────────────────────────────────────────────────────────────
+services:
+- type: web
+name: mysql-mcp
+runtime: python
+plan: free
+buildCommand: pip install -r requirements.txt
+startCommand: python server.py
+envVars:
+- key: MCP_TRANSPORT
+value: sse
+- key: PORT
+value: 8000
+# Set the following securely in Render UI or here with sync:false
+- key: MYSQL_HOST
+sync: false
+- key: MYSQL_PORT
+value: "3306"
+- key: MYSQL_USER
+sync: false
+- key: MYSQL_PASSWORD
+sync: false
+- key: MYSQL_DATABASE
+sync: false
+- key: API_KEY
+sync: false
