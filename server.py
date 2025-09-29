@@ -189,4 +189,4 @@ async def execute_many(ctx, sql: str, params: List[List[Any]], database: Optiona
 # ---------------------- Entrypoint ----------------------
 if __name__ == "__main__":
     # Serve over SSE/HTTP for remote use (works on Render). For local tooling, set MCP_TRANSPORT=stdio
-    mcp.run(transport=TRANSPORT, host=HOST, port=PORT)
+    mcp.run(transport=TRANSPORT, port=PORT)
