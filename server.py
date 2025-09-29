@@ -16,7 +16,7 @@ from mysql.connector import errorcode
 
 # ASGI bits for HTTP/SSE
 from starlette.applications import Starlette
-from starlette.responses import PlainTextResponse
+from starlette.responses import PlainTextResponse, JSONResponse
 from starlette.routing import Mount, Route
 import uvicorn
 
@@ -198,10 +198,49 @@ async def _health(_request):
     return PlainTextResponse("OK")
 
 def build_asgi_app():
+    # --- Test endpoints (HTTP only) to validate quickly with curl/Postman ---
+    async def test_ping(request):
+        # Require same Authorization header as MCP
+        auth = request.headers.get("authorization") or request.headers.get("Authorization")
+        if API_KEY and (not auth or not auth.lower().startswith("bearer ") or auth.split(" ",1)[1].strip() != API_KEY):
+            return PlainTextResponse("Unauthorized", status_code=401)
+        # Build a minimal ctx stub with headers
+        class Ctx: pass
+        ctx = Ctx(); ctx.request_headers = {"Authorization": auth} if auth else {}
+        res = await ping(ctx)
+        return JSONResponse({"result": res})
+
+    async def test_list_dbs(request):
+        auth = request.headers.get("authorization") or request.headers.get("Authorization")
+        if API_KEY and (not auth or not auth.lower().startswith("bearer ") or auth.split(" ",1)[1].strip() != API_KEY):
+            return PlainTextResponse("Unauthorized", status_code=401)
+        class Ctx: pass
+        ctx = Ctx(); ctx.request_headers = {"Authorization": auth} if auth else {}
+        res = await list_databases(ctx)
+        return JSONResponse({"databases": res})
+
+    async def test_run_sql(request):
+        auth = request.headers.get("authorization") or request.headers.get("Authorization")
+        if API_KEY and (not auth or not auth.lower().startswith("bearer ") or auth.split(" ",1)[1].strip() != API_KEY):
+            return PlainTextResponse("Unauthorized", status_code=401)
+        params = dict(request.query_params)
+        sql = params.get("sql")
+        database = params.get("database")
+        if not sql:
+            return PlainTextResponse("Missing ?sql=...", status_code=400)
+        class Ctx: pass
+        ctx = Ctx(); ctx.request_headers = {"Authorization": auth} if auth else {}
+        res = await run_sql(ctx, sql=sql, database=database)
+        return JSONResponse(res)
+
     if TRANSPORT == "http":
         mounted = mcp.streamable_http_app()  # MCP endpoint at /mcp when mounted at root
         routes = [
             Route("/health", _health),
+            # quick test endpoints (protected by API_KEY header)
+            Route("/test/ping", test_ping),
+            Route("/test/list_databases", test_list_dbs),
+            Route("/test/run_sql", test_run_sql),
             Mount("/", app=mounted),
         ]
     elif TRANSPORT == "sse":
