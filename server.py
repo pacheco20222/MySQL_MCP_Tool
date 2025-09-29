@@ -34,12 +34,19 @@ PORT = int(os.getenv("PORT", "8000"))
 HOST = os.getenv("HOST", "0.0.0.0")
 PUBLIC_PATH_TOKEN = os.getenv("PUBLIC_PATH_TOKEN")  # optional: mount MCP under /<token> to emulate URL-based access control
 
-# FastMCP mounts HTTP handlers under /mcp by default; expose them at the root so
-# simple base URLs like https://service/ work with HTTP transport clients.
-STREAMABLE_HTTP_PATH = "/" if TRANSPORT == "http" else "/mcp"
+# FastMCP mounts HTTP handlers under /mcp by default; allow overriding to match
+# expected public URLs (optionally with a token path segment).
+if TRANSPORT == "http" and PUBLIC_PATH_TOKEN:
+    STREAMABLE_HTTP_PATH = f"/{PUBLIC_PATH_TOKEN}"
+elif TRANSPORT == "http":
+    STREAMABLE_HTTP_PATH = "/"
+else:
+    STREAMABLE_HTTP_PATH = "/mcp"
 
 # ---------------------- MCP Init ----------------------
 mcp = FastMCP("mysql-mcp", streamable_http_path=STREAMABLE_HTTP_PATH)
+
+_http_routes_registered = False
 
 # ---------------------- Helpers ----------------------
 
@@ -202,53 +209,84 @@ async def execute_many(ctx, sql: str, params: List[List[Any]], database: Optiona
 async def _health(_request):
     return PlainTextResponse("OK")
 
-def build_asgi_app():
-    # --- Test endpoints (HTTP only) to validate quickly with curl/Postman ---
-    async def test_ping(request):
-        # Require same Authorization header as MCP
+def _register_http_routes() -> None:
+    global _http_routes_registered
+    if _http_routes_registered:
+        return
+
+    prefix = STREAMABLE_HTTP_PATH.rstrip("/") if STREAMABLE_HTTP_PATH != "/" else ""
+
+    @mcp.custom_route("/health", methods=["GET"])
+    async def http_health(_request):
+        return PlainTextResponse("OK")
+
+    if prefix:
+        @mcp.custom_route(f"{prefix}/health", methods=["GET"])
+        async def http_health_scoped(_request):
+            return PlainTextResponse("OK")
+
+    async def _auth_guard(request):
         auth = request.headers.get("authorization") or request.headers.get("Authorization")
-        if API_KEY and (not auth or not auth.lower().startswith("bearer ") or auth.split(" ",1)[1].strip() != API_KEY):
+        if API_KEY and (not auth or not auth.lower().startswith("bearer ") or auth.split(" ", 1)[1].strip() != API_KEY):
+            raise PermissionError("Unauthorized")
+        class Ctx:
+            pass
+        ctx = Ctx()
+        ctx.request_headers = {"Authorization": auth} if auth else {}
+        return ctx
+
+    async def _handle_ping(request):
+        try:
+            ctx = await _auth_guard(request)
+        except PermissionError:
             return PlainTextResponse("Unauthorized", status_code=401)
-        # Build a minimal ctx stub with headers
-        class Ctx: pass
-        ctx = Ctx(); ctx.request_headers = {"Authorization": auth} if auth else {}
         res = await ping(ctx)
         return JSONResponse({"result": res})
 
-    async def test_list_dbs(request):
-        auth = request.headers.get("authorization") or request.headers.get("Authorization")
-        if API_KEY and (not auth or not auth.lower().startswith("bearer ") or auth.split(" ",1)[1].strip() != API_KEY):
+    async def _handle_list_databases(request):
+        try:
+            ctx = await _auth_guard(request)
+        except PermissionError:
             return PlainTextResponse("Unauthorized", status_code=401)
-        class Ctx: pass
-        ctx = Ctx(); ctx.request_headers = {"Authorization": auth} if auth else {}
         res = await list_databases(ctx)
         return JSONResponse({"databases": res})
 
-    async def test_run_sql(request):
-        auth = request.headers.get("authorization") or request.headers.get("Authorization")
-        if API_KEY and (not auth or not auth.lower().startswith("bearer ") or auth.split(" ",1)[1].strip() != API_KEY):
+    async def _handle_run_sql(request):
+        try:
+            ctx = await _auth_guard(request)
+        except PermissionError:
             return PlainTextResponse("Unauthorized", status_code=401)
         params = dict(request.query_params)
         sql = params.get("sql")
         database = params.get("database")
         if not sql:
             return PlainTextResponse("Missing ?sql=...", status_code=400)
-        class Ctx: pass
-        ctx = Ctx(); ctx.request_headers = {"Authorization": auth} if auth else {}
         res = await run_sql(ctx, sql=sql, database=database)
         return JSONResponse(res)
 
+    def _register_test_route(path: str, handler):
+        @mcp.custom_route(path, methods=["GET"])
+        async def route(request, _handler=handler):
+            return await _handler(request)
+
+    for base in ("/test/ping", "/test/list_databases", "/test/run_sql"):
+        if base.endswith("ping"):
+            handler = _handle_ping
+        elif base.endswith("list_databases"):
+            handler = _handle_list_databases
+        else:
+            handler = _handle_run_sql
+        _register_test_route(base, handler)
+        if prefix:
+            _register_test_route(f"{prefix}{base}", handler)
+
+    _http_routes_registered = True
+
+
+def build_asgi_app():
     if TRANSPORT == "http":
-        mounted = mcp.streamable_http_app()  # MCP endpoint mounted under prefix
-        prefix = f"/{PUBLIC_PATH_TOKEN}" if PUBLIC_PATH_TOKEN else "/"
-        routes = [
-            Route("/health", _health),
-            # quick test endpoints (protected by API_KEY header)
-            Route("/test/ping", test_ping),
-            Route("/test/list_databases", test_list_dbs),
-            Route("/test/run_sql", test_run_sql),
-            Mount(prefix, app=mounted),
-        ]
+        _register_http_routes()
+        return mcp.streamable_http_app()
     elif TRANSPORT == "sse":
         mounted = mcp.sse_app()
         prefix = f"/{PUBLIC_PATH_TOKEN}" if PUBLIC_PATH_TOKEN else "/"
