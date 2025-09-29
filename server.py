@@ -14,6 +14,12 @@ from mcp.server.fastmcp import FastMCP
 import mysql.connector
 from mysql.connector import errorcode
 
+# ASGI bits for HTTP/SSE
+from starlette.applications import Starlette
+from starlette.responses import PlainTextResponse
+from starlette.routing import Mount, Route
+import uvicorn
+
 # ---------------------- Config ----------------------
 MYSQL_HOST = os.getenv("MYSQL_HOST", "localhost")
 MYSQL_PORT = int(os.getenv("MYSQL_PORT", "3306"))
@@ -23,7 +29,7 @@ DEFAULT_DB = os.getenv("MYSQL_DATABASE")  # optional default schema
 
 API_KEY = os.getenv("API_KEY")  # optional bearer token; if set, required
 
-TRANSPORT = os.getenv("MCP_TRANSPORT", "sse")  # stdio | sse | http
+TRANSPORT = os.getenv("MCP_TRANSPORT", "http").lower()  # stdio | http | sse
 PORT = int(os.getenv("PORT", "8000"))
 HOST = os.getenv("HOST", "0.0.0.0")
 
@@ -186,7 +192,32 @@ async def execute_many(ctx, sql: str, params: List[List[Any]], database: Optiona
     cur.close(); con.close()
     return {"rowcount": rc}
 
+# ---------------------- ASGI App for HTTP/SSE ----------------------
+
+async def _health(_request):
+    return PlainTextResponse("OK")
+
+def build_asgi_app():
+    if TRANSPORT == "http":
+        mounted = mcp.streamable_http_app()  # MCP endpoint at /mcp when mounted at root
+        routes = [
+            Route("/health", _health),
+            Mount("/", app=mounted),
+        ]
+    elif TRANSPORT == "sse":
+        mounted = mcp.sse_app()
+        routes = [
+            Route("/health", _health),
+            Mount("/", app=mounted),
+        ]
+    else:
+        routes = [Route("/health", _health)]
+    return Starlette(routes=routes)
+
 # ---------------------- Entrypoint ----------------------
 if __name__ == "__main__":
-    # Serve over SSE/HTTP for remote use (works on Render). For local tooling, set MCP_TRANSPORT=stdio
-    mcp.run(transport=TRANSPORT, port=PORT)
+    if TRANSPORT == "stdio":
+        mcp.run()
+    else:
+        app = build_asgi_app()
+        uvicorn.run(app, host=HOST, port=PORT)
